@@ -100,7 +100,7 @@ def build_embed(datum, mitglieder, eingefroren=False):
         title=titel,
         description=(
             f"**{datum}**\n"
-            f"Aufstellung: **20:30 Uhr**\n"
+            f"Aufstellung: **21:00 Uhr**\n"
             f"{'🔒 Abstimmung geschlossen!' if eingefroren else '✅ Jetzt abstimmen!'}"
         ),
         color=EMBED_COLOR
@@ -285,7 +285,7 @@ async def check_zeit():
             await neue_abstimmung_posten(guild)
         await asyncio.sleep(61)
 
-    if h == 20 and m == 30 and not data.get("eingefroren", False):
+    if h == 21 and m == 00 and not data.get("eingefroren", False):
         for guild in bot.guilds:
             await abstimmung_einfrieren(guild)
         await asyncio.sleep(61)
