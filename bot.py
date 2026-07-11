@@ -135,7 +135,7 @@ def build_embed(datum, mitglieder, eingefroren=False):
             inline=False
         )
 
-    embed.set_footer(text="GUERILLA · Orga Management")
+    embed.set_footer(text="GUERILLA")
     embed.timestamp = datetime.now(TIMEZONE)
     return embed
 
@@ -285,7 +285,7 @@ async def check_zeit():
             await neue_abstimmung_posten(guild)
         await asyncio.sleep(61)
 
-    if h == 21 and m == 00 and not data.get("eingefroren", False):
+    if h == 21 and m == 0 and not data.get("eingefroren", False):
         for guild in bot.guilds:
             await abstimmung_einfrieren(guild)
         await asyncio.sleep(61)
@@ -412,7 +412,7 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
             embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
             embed_abm.add_field(name="Von",      value=von,                      inline=True)
             embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
-            embed_abm.set_footer(text="GUERILLA · Orga Management")
+            embed_abm.set_footer(text="GUERILLA")
             embed_abm.timestamp = datetime.now(TIMEZONE)
             await abm_kanal.send(embed=embed_abm)
 
