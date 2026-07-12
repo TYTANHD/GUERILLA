@@ -28,7 +28,9 @@ def load_data():
         "aktuelles_datum": None,
         "channel_aufstellung": None,
         "channel_archiv": None,
-        "channel_abmeldung": None
+        "channel_abmeldung": None,
+        "channel_abmeldung_liste": None,
+        "abmeldung_liste_nachricht_id": None
     }
 
 def save_data(data):
@@ -169,9 +171,11 @@ class AufstellungView(discord.ui.View):
         if not await self.check_berechtigung(interaction):
             return
         data["abstimmung"][str(interaction.user.id)] = "ja"
-        data["abmeldungen"].pop(str(interaction.user.id), None)
+        hatte_abmeldung = data["abmeldungen"].pop(str(interaction.user.id), None)
         save_data(data)
         await update_nachricht(interaction.guild)
+        if hatte_abmeldung:
+            await update_abmeldung_liste(interaction.guild)
         await interaction.response.send_message("Du hast mit **Komme** abgestimmt!", ephemeral=True)
 
     @discord.ui.button(label="Komme später", style=discord.ButtonStyle.secondary, custom_id="btn_spaeter")
@@ -179,9 +183,11 @@ class AufstellungView(discord.ui.View):
         if not await self.check_berechtigung(interaction):
             return
         data["abstimmung"][str(interaction.user.id)] = "spaeter"
-        data["abmeldungen"].pop(str(interaction.user.id), None)
+        hatte_abmeldung = data["abmeldungen"].pop(str(interaction.user.id), None)
         save_data(data)
         await update_nachricht(interaction.guild)
+        if hatte_abmeldung:
+            await update_abmeldung_liste(interaction.guild)
         await interaction.response.send_message("Du hast mit **Komme später** abgestimmt!", ephemeral=True)
 
     @discord.ui.button(label="Komme nicht", style=discord.ButtonStyle.danger, custom_id="btn_nein")
@@ -189,9 +195,11 @@ class AufstellungView(discord.ui.View):
         if not await self.check_berechtigung(interaction):
             return
         data["abstimmung"][str(interaction.user.id)] = "nein"
-        data["abmeldungen"].pop(str(interaction.user.id), None)
+        hatte_abmeldung = data["abmeldungen"].pop(str(interaction.user.id), None)
         save_data(data)
         await update_nachricht(interaction.guild)
+        if hatte_abmeldung:
+            await update_abmeldung_liste(interaction.guild)
         await interaction.response.send_message("Du hast mit **Komme nicht** abgestimmt!", ephemeral=True)
 
 async def update_nachricht(guild):
@@ -210,8 +218,80 @@ async def update_nachricht(guild):
     except Exception as e:
         print(f"Fehler beim Update der Nachricht: {e}")
 
+# ─── ABMELDUNGS-ÜBERSICHT (persistente Liste) ────────────────────────────────
+def parse_datum(datum_str):
+    """Versucht ein Datum im Format TT.MM.JJJJ zu parsen, sonst None."""
+    try:
+        return datetime.strptime(str(datum_str).strip(), "%d.%m.%Y")
+    except Exception:
+        return None
+
+def build_abmeldung_liste_embed(guild):
+    abmeldungen = data.get("abmeldungen", {})
+    embed = discord.Embed(
+        title="Abmeldungs-Übersicht",
+        color=EMBED_COLOR
+    )
+
+    if not abmeldungen:
+        embed.description = "*Aktuell ist niemand abgemeldet.*"
+        embed.set_footer(text="GUERILLA")
+        embed.timestamp = datetime.now(TIMEZONE)
+        return embed
+
+    # Sortierung: wer zuerst wieder zurück ist (frühestes "Bis"-Datum), steht oben.
+    # Nicht parsbare Daten landen ans Ende.
+    def sort_key(item):
+        _, info = item
+        parsed = parse_datum(info.get("bis", ""))
+        return (parsed is None, parsed or datetime.max)
+
+    sortierte_abmeldungen = sorted(abmeldungen.items(), key=sort_key)
+
+    bloecke = []
+    for uid, info in sortierte_abmeldungen:
+        member  = guild.get_member(int(uid))
+        name    = member.display_name if member else f"Unbekanntes Mitglied ({uid})"
+        mention = member.mention if member else f"<@{uid}>"
+
+        typ       = info.get("typ", "kurzzeit")
+        typ_label = "🕐 Langzeit" if typ == "langzeit" else "📅 Kurzzeit"
+        von       = info.get("von", "-")
+        bis       = info.get("bis", "-")
+        grund     = info.get("grund", "-")
+
+        block = (
+            f"{mention}  ·  {typ_label}\n"
+            f"Von: **{von}**  Bis: **{bis}**  Grund: {grund}"
+        )
+        bloecke.append(block)
+
+    embed.description = "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(bloecke)
+    embed.set_footer(text="GUERILLA")
+    embed.timestamp = datetime.now(TIMEZONE)
+    return embed
+
+async def update_abmeldung_liste(guild):
+    if not data.get("channel_abmeldung_liste"):
+        return
+    kanal = guild.get_channel(int(data["channel_abmeldung_liste"]))
+    if not kanal:
+        return
+    embed  = build_abmeldung_liste_embed(guild)
+    msg_id = data.get("abmeldung_liste_nachricht_id")
+    if msg_id:
+        try:
+            msg = await kanal.fetch_message(int(msg_id))
+            await msg.edit(embed=embed)
+            return
+        except Exception as e:
+            print(f"Abmeldungs-Liste Nachricht nicht gefunden, poste neu: {e}")
+    msg = await kanal.send(embed=embed)
+    data["abmeldung_liste_nachricht_id"] = str(msg.id)
+    save_data(data)
+
 # ─── NEUE ABSTIMMUNG POSTEN ───────────────────────────────────────────────────
-async def neue_abstimmung_posten(guild, manual_channel=None):
+async def neue_abstimmung_posten(guild, manual_channel=None, verwende_heute=False):
     if manual_channel:
         kanal = manual_channel
     elif data.get("channel_aufstellung"):
@@ -224,9 +304,8 @@ async def neue_abstimmung_posten(guild, manual_channel=None):
         print("Aufstellungs-Channel nicht gefunden!")
         return
 
-    datum = get_morgen_datum()
+    datum = get_heute_datum() if verwende_heute else get_morgen_datum()
     data["abstimmung"]      = {}
-    data["abmeldungen"]     = {}
     data["eingefroren"]     = False
     data["aktuelles_datum"] = datum
 
@@ -334,35 +413,55 @@ async def set_abmeldung(interaction: discord.Interaction, channel: discord.TextC
         f"✅ Abmeldungs-Channel gesetzt: {channel.mention}", ephemeral=True
     )
 
+@tree.command(name="set_abmeldung_liste", description="Setzt den Channel für die Abmeldungs-Übersicht (Live-Liste)")
+@app_commands.describe(channel="Der Channel wo die aktuelle Übersicht aller Abmeldungen als Liste gepostet wird")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_abmeldung_liste(interaction: discord.Interaction, channel: discord.TextChannel):
+    data["channel_abmeldung_liste"] = channel.id
+    data["abmeldung_liste_nachricht_id"] = None
+    save_data(data)
+    await interaction.response.send_message(
+        f"✅ Abmeldungs-Übersicht-Channel gesetzt: {channel.mention}", ephemeral=True
+    )
+    await update_abmeldung_liste(interaction.guild)
+
 @tree.command(name="channels", description="Zeigt alle aktuell gesetzten Channels und die Rolle")
 @app_commands.checks.has_permissions(administrator=True)
 async def channels_info(interaction: discord.Interaction):
-    auf  = interaction.guild.get_channel(int(data["channel_aufstellung"])) if data.get("channel_aufstellung") else None
-    arch = interaction.guild.get_channel(int(data["channel_archiv"]))      if data.get("channel_archiv")      else None
-    abm  = interaction.guild.get_channel(int(data["channel_abmeldung"]))   if data.get("channel_abmeldung")   else None
+    auf   = interaction.guild.get_channel(int(data["channel_aufstellung"]))      if data.get("channel_aufstellung")      else None
+    arch  = interaction.guild.get_channel(int(data["channel_archiv"]))           if data.get("channel_archiv")           else None
+    abm   = interaction.guild.get_channel(int(data["channel_abmeldung"]))        if data.get("channel_abmeldung")        else None
+    liste = interaction.guild.get_channel(int(data["channel_abmeldung_liste"]))  if data.get("channel_abmeldung_liste")  else None
     rolle_id = data.get("rolle_id")
     rolle = interaction.guild.get_role(int(rolle_id)) if rolle_id else None
 
     await interaction.response.send_message(
         f"**Aktuelle Einstellungen:**\n\n"
-        f"Rolle:        {rolle.mention if rolle else '❌ Nicht gesetzt – /setrolle benutzen'}\n"
-        f"Aufstellung:  {auf.mention  if auf  else '❌ Nicht gesetzt – /set_aufstellung benutzen'}\n"
-        f"Archiv:       {arch.mention if arch else '❌ Nicht gesetzt – /set_archiv benutzen'}\n"
-        f"Abmeldung:    {abm.mention  if abm  else '❌ Nicht gesetzt – /set_abmeldung benutzen'}",
+        f"Rolle:              {rolle.mention  if rolle  else '❌ Nicht gesetzt – /setrolle benutzen'}\n"
+        f"Aufstellung:        {auf.mention    if auf    else '❌ Nicht gesetzt – /set_aufstellung benutzen'}\n"
+        f"Archiv:             {arch.mention   if arch   else '❌ Nicht gesetzt – /set_archiv benutzen'}\n"
+        f"Abmeldung:          {abm.mention    if abm    else '❌ Nicht gesetzt – /set_abmeldung benutzen'}\n"
+        f"Abmeldungs-Liste:   {liste.mention  if liste  else '❌ Nicht gesetzt – /set_abmeldung_liste benutzen'}",
         ephemeral=True
     )
 
 @tree.command(name="abstimmung", description="Postet manuell eine neue Aufstellungs-Abstimmung")
+@app_commands.describe(datum="Für welchen Tag gilt die Aufstellung? (Standard: Heute)")
+@app_commands.choices(datum=[
+    app_commands.Choice(name="Heute", value="heute"),
+    app_commands.Choice(name="Morgen", value="morgen"),
+])
 @app_commands.checks.has_permissions(administrator=True)
-async def abstimmung_manuell(interaction: discord.Interaction):
+async def abstimmung_manuell(interaction: discord.Interaction, datum: app_commands.Choice[str] = None):
     if not data.get("channel_aufstellung"):
         await interaction.response.send_message(
             "❌ Kein Aufstellungs-Channel gesetzt!\nBitte zuerst **/set_aufstellung #channel** benutzen.",
             ephemeral=True
         )
         return
+    verwende_heute = (datum is None) or (datum.value == "heute")
     await interaction.response.send_message("Erstelle neue Abstimmung...", ephemeral=True)
-    await neue_abstimmung_posten(interaction.guild)
+    await neue_abstimmung_posten(interaction.guild, verwende_heute=verwende_heute)
     await interaction.edit_original_response(content="✅ Neue Abstimmung wurde gepostet!")
 
 @tree.command(name="status", description="Zeigt den aktuellen Abstimmungsstand")
@@ -396,6 +495,7 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
 
     if not data.get("eingefroren"):
         await update_nachricht(interaction.guild)
+    await update_abmeldung_liste(interaction.guild)
 
     await interaction.response.send_message(
         f"✅ Abmeldung eingetragen!\n"
@@ -417,9 +517,13 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
             embed_abm.timestamp = datetime.now(TIMEZONE)
             await abm_kanal.send(embed=embed_abm)
 
-@tree.command(name="abmeldung_langzeit", description="Trägt eine unbefristete Langzeit-Abmeldung ein")
-@app_commands.describe(grund="Grund der Langzeit-Abmeldung")
-async def abmeldung_langzeit(interaction: discord.Interaction, grund: str):
+@tree.command(name="abmeldung_langzeit", description="Trägt eine Langzeit-Abmeldung ein (Zeitraum länger als eine Woche)")
+@app_commands.describe(
+    von="Von wann? (z.B. 14.07.2026)",
+    bis="Bis wann? (z.B. 25.08.2026)",
+    grund="Grund der Langzeit-Abmeldung"
+)
+async def abmeldung_langzeit(interaction: discord.Interaction, von: str, bis: str, grund: str):
     rolle_id = data.get("rolle_id")
     if rolle_id:
         rolle = interaction.guild.get_role(int(rolle_id))
@@ -430,17 +534,19 @@ async def abmeldung_langzeit(interaction: discord.Interaction, grund: str):
             return
 
     uid = str(interaction.user.id)
-    data["abmeldungen"][uid] = {"von": "unbefristet", "bis": "unbefristet", "grund": grund, "typ": "langzeit"}
+    data["abmeldungen"][uid] = {"von": von, "bis": bis, "grund": grund, "typ": "langzeit"}
     data["abstimmung"].pop(uid, None)
     save_data(data)
 
     if not data.get("eingefroren"):
         await update_nachricht(interaction.guild)
+    await update_abmeldung_liste(interaction.guild)
 
     await interaction.response.send_message(
         f"✅ Langzeit-Abmeldung eingetragen!\n"
-        f"Du wirst in der Aufstellung als Abgemeldet angezeigt, bis ein Admin die "
-        f"Abmeldung mit **/abmeldung_loeschen** wieder entfernt.",
+        f"Von: **{von}**\n"
+        f"Bis: **{bis}**\n"
+        f"Du wirst in der Aufstellung als Abgemeldet angezeigt.",
         ephemeral=True
     )
 
@@ -449,8 +555,9 @@ async def abmeldung_langzeit(interaction: discord.Interaction, grund: str):
         if abm_kanal:
             embed_abm = discord.Embed(title="Neue Langzeit-Abmeldung", color=EMBED_COLOR)
             embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
-            embed_abm.add_field(name="Dauer",    value="Unbefristet",           inline=True)
-            embed_abm.add_field(name="Grund",    value=grund,                   inline=False)
+            embed_abm.add_field(name="Von",      value=von,                      inline=True)
+            embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
+            embed_abm.add_field(name="Grund",    value=grund,                    inline=False)
             embed_abm.set_footer(text="GUERILLA")
             embed_abm.timestamp = datetime.now(TIMEZONE)
             await abm_kanal.send(embed=embed_abm)
@@ -464,6 +571,7 @@ async def abmeldung_loeschen(interaction: discord.Interaction, mitglied: discord
         del data["abmeldungen"][uid]
         save_data(data)
         await update_nachricht(interaction.guild)
+        await update_abmeldung_liste(interaction.guild)
         await interaction.response.send_message(
             f"✅ Abmeldung von **{mitglied.display_name}** entfernt.", ephemeral=True
         )
