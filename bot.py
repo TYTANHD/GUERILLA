@@ -390,7 +390,7 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
             return
 
     uid = str(interaction.user.id)
-    data["abmeldungen"][uid] = {"von": von, "bis": bis, "grund": grund}
+    data["abmeldungen"][uid] = {"von": von, "bis": bis, "grund": grund, "typ": "kurzzeit"}
     data["abstimmung"].pop(uid, None)
     save_data(data)
 
@@ -412,6 +412,45 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
             embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
             embed_abm.add_field(name="Von",      value=von,                      inline=True)
             embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
+            embed_abm.add_field(name="Grund",    value=grund,                    inline=False)
+            embed_abm.set_footer(text="GUERILLA")
+            embed_abm.timestamp = datetime.now(TIMEZONE)
+            await abm_kanal.send(embed=embed_abm)
+
+@tree.command(name="abmeldung_langzeit", description="Trägt eine unbefristete Langzeit-Abmeldung ein")
+@app_commands.describe(grund="Grund der Langzeit-Abmeldung")
+async def abmeldung_langzeit(interaction: discord.Interaction, grund: str):
+    rolle_id = data.get("rolle_id")
+    if rolle_id:
+        rolle = interaction.guild.get_role(int(rolle_id))
+        if rolle and rolle not in interaction.user.roles:
+            await interaction.response.send_message(
+                "Du hast keine Berechtigung zur Abmeldung.", ephemeral=True
+            )
+            return
+
+    uid = str(interaction.user.id)
+    data["abmeldungen"][uid] = {"von": "unbefristet", "bis": "unbefristet", "grund": grund, "typ": "langzeit"}
+    data["abstimmung"].pop(uid, None)
+    save_data(data)
+
+    if not data.get("eingefroren"):
+        await update_nachricht(interaction.guild)
+
+    await interaction.response.send_message(
+        f"✅ Langzeit-Abmeldung eingetragen!\n"
+        f"Du wirst in der Aufstellung als Abgemeldet angezeigt, bis ein Admin die "
+        f"Abmeldung mit **/abmeldung_loeschen** wieder entfernt.",
+        ephemeral=True
+    )
+
+    if data.get("channel_abmeldung"):
+        abm_kanal = interaction.guild.get_channel(int(data["channel_abmeldung"]))
+        if abm_kanal:
+            embed_abm = discord.Embed(title="Neue Langzeit-Abmeldung", color=EMBED_COLOR)
+            embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
+            embed_abm.add_field(name="Dauer",    value="Unbefristet",           inline=True)
+            embed_abm.add_field(name="Grund",    value=grund,                   inline=False)
             embed_abm.set_footer(text="GUERILLA")
             embed_abm.timestamp = datetime.now(TIMEZONE)
             await abm_kanal.send(embed=embed_abm)
